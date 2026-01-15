@@ -133,7 +133,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._statistics_during_period_compat,
             start_local,
             end_local,
-            statistic_ids,
+            set(statistic_ids),
         )
         if not isinstance(stats, tuple):
             stats, metadata = stats, {}
@@ -426,7 +426,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_request_refresh()
 
     def _statistics_during_period_compat(
-        self, start_local: datetime, end_local: datetime, statistic_ids: list[str]
+        self, start_local: datetime, end_local: datetime, statistic_ids: list[str] | set[str]
     ) -> dict[str, Any]:
         """Call statistics_during_period with a version-tolerant signature."""
         start_utc = dt_util.as_utc(start_local)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 import re
+import calendar
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -37,6 +38,12 @@ async def async_setup_entry(
         ent = EnergyForecastNodeSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"))
         entities.append(ent)
         added.add(ent.unique_id)  # type: ignore[arg-type]
+        
+        # Monthly sensors
+        for month in range(1, 13):
+             m_ent = EnergyForecastMonthSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"), month)
+             entities.append(m_ent)
+             added.add(m_ent.unique_id)
 
     async_add_entities(entities)
 
@@ -52,6 +59,14 @@ async def async_setup_entry(
             ent = EnergyForecastNodeSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"))
             new_entities.append(ent)
             added.add(unique_id)
+            
+            for month in range(1, 13):
+                m_unique_id = f"{unique_id}_month_{month}"
+                if m_unique_id in added:
+                    continue
+                m_ent = EnergyForecastMonthSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"), month)
+                new_entities.append(m_ent)
+                added.add(m_unique_id)
         if new_entities:
             async_add_entities(new_entities)
 
@@ -158,6 +173,65 @@ class EnergyForecastNodeSensor(_BaseEnergyForecastSensor):
             "forecast_remaining": node.get("forecast_remaining"),
             "monthly": node.get("monthly", []),
             "daily": node.get("daily", []),
+        }
+
+
+class EnergyForecastMonthSensor(_BaseEnergyForecastSensor):
+    """Sensor for a specific month's forecast of a node."""
+
+    def __init__(
+        self,
+        coordinator: EnergyForecastCoordinator,
+        entry: ConfigEntry,
+        prefix: str,
+        stat_id: str,
+        node_name: str | None,
+        month: int,
+    ) -> None:
+        super().__init__(coordinator, entry, prefix=prefix)
+        self._stat_id = stat_id
+        self._month = month
+        self._attr_unique_id = f"{entry.entry_id}_node_{stat_id}_month_{month}"
+        
+        month_name = calendar.month_name[month]
+        safe_name = (node_name or stat_id)
+        
+        # Object ID: prefix_slug_month
+        self._attr_suggested_object_id = f"{prefix}{_normalize_object_id(stat_id)}_{month_name.lower()}"
+        self._attr_name = f"{safe_name} {month_name}"
+
+    @property
+    def _node(self) -> dict[str, Any] | None:
+        for node in self._data.get("nodes", []):
+            if node.get("statistic_id") == self._stat_id:
+                return node
+        return None
+
+    @property
+    def _month_data(self) -> dict[str, Any] | None:
+        node = self._node
+        if not node:
+            return None
+        for m in node.get("monthly", []):
+            if m["month"] == self._month:
+                return m
+        return None
+
+    @property
+    def native_value(self) -> float | None:
+        data = self._month_data
+        if not data:
+            return 0.0
+        return data.get("forecast")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._month_data or {}
+        return {
+            "month": self._month,
+            "actual": data.get("actual", 0.0),
+            "forecast_component": data.get("forecast", 0.0) - data.get("remaining", 0.0), # Approximate 'forecasted' part? No, 'forecast' is total.
+            "remaining": data.get("remaining", 0.0),
         }
 
 
