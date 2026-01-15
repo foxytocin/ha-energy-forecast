@@ -10,7 +10,8 @@ Custom integration for Home Assistant 2026.1.x that uses the Energy Dashboard gr
   - Warm water: `1.20, 1.15, 1.05, 0.95, 0.85, 0.75, 0.70, 0.80, 0.95, 1.05, 1.10, 1.15`
 - Linear extrapolation for non-seasonal nodes; residuals per parent prevent double counting.
 - Options for forecast year, node-to-profile mapping, and scale factors per profile.
-- Exposes one sensor: `sensor.energy_forecast` with attributes for totals and per-node breakdown.
+- Custom monthly factors per profile (enter 12 comma-separated values).
+- Exposes sensors for the total forecast plus one sensor per Energy Dashboard statistic ID.
 
 ## Install
 1. Add this repository as a custom repository in HACS (Integration type).
@@ -23,12 +24,13 @@ Custom integration for Home Assistant 2026.1.x that uses the Energy Dashboard gr
 - **Heating nodes**: Select Energy Dashboard devices that should use the heating profile (multi-select).
 - **Warm water nodes**: Select devices for the warm water profile (multi-select).
 - **Scale factors**: Multipliers applied to the seasonal profiles (default `1.0` each).
+- **Monthly factors**: Override seasonal weighting (12 comma-separated numbers) for heating and warm water.
 - **Sensor prefix**: Optional prefix (e.g., `fms_`) that is applied to generated entity IDs to avoid naming collisions.
 - The device tree is read from the Energy Dashboard; no manual wiring is required.
 
 ## Sensor output
-- State: Forecasted total consumption (kWh) for the configured year.
-- Attributes: `year`, `as_of`, `total_actual`, `total_remaining`, `nodes` (list with statistic_id, name, residual, forecast_total, forecast_remaining, method/profile).
+- Total sensor: State = forecasted total consumption (kWh) for the configured year; attributes: `year`, `as_of`, `total_actual`, `total_remaining`, `monthly` (list of monthly actual/forecast/remaining), `nodes` (per-statistic breakdown).
+- Per-node sensors: One sensor per Energy Dashboard statistic ID, with state = node forecast and attributes for residuals, profile, parents/children, and monthly breakdown.
 
 ## Notes
 - Residual = measured(node) − sum(measured(children)); clamped at 0.

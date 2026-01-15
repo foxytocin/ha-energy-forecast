@@ -20,8 +20,10 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_HEATING_NODES,
     CONF_HEATING_SCALE,
+    CONF_HEATING_FACTORS,
     CONF_WARM_WATER_NODES,
     CONF_WARM_WATER_SCALE,
+    CONF_WARM_WATER_FACTORS,
     CONF_YEAR,
     DEFAULT_HEATING_SCALE,
     DEFAULT_WARM_WATER_SCALE,
@@ -47,9 +49,12 @@ class ForecastNode:
     parent: str | None
     children: list[str] = field(default_factory=list)
     measured: float = 0.0
+    monthly_measured: dict[int, float] = field(default_factory=dict)
     residual: float = 0.0
+    monthly_residual: dict[int, float] = field(default_factory=dict)
     forecast_total: float = 0.0
     forecast_remaining: float = 0.0
+    monthly_forecast: list[dict[str, Any]] = field(default_factory=list)
     method: str = "linear"
     profile: str | None = None
 
@@ -84,6 +89,12 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         heating_nodes = set(options.get(CONF_HEATING_NODES, []) or [])
         warm_water_nodes = set(options.get(CONF_WARM_WATER_NODES, []) or [])
+        heating_factors = self._load_factors(
+            options.get(CONF_HEATING_FACTORS), HEAT_LOAD_FACTORS
+        )
+        warm_water_factors = self._load_factors(
+            options.get(CONF_WARM_WATER_FACTORS), WARM_WATER_LOAD_FACTORS
+        )
 
         now = dt_util.now()
         tz = dt_util.get_time_zone(self.hass.config.time_zone)
@@ -125,9 +136,21 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for stat_id, results in (stats or {}).items():
             if stat_id not in nodes:
                 continue
-            nodes[stat_id].measured = sum(
-                item["sum"] for item in results if item.get("sum") is not None
-            )
+            total = 0.0
+            monthly: dict[int, float] = {}
+            for item in results:
+                val = item.get("sum")
+                if val is None:
+                    continue
+                total += val
+                try:
+                    month = dt_util.as_local(item["start"]).month  # type: ignore[index]
+                except Exception:
+                    month = None
+                if month:
+                    monthly[month] = monthly.get(month, 0.0) + val
+            nodes[stat_id].measured = total
+            nodes[stat_id].monthly_measured = monthly
 
         self._compute_residuals(nodes)
         self._assign_profiles(nodes, heating_nodes, warm_water_nodes)
@@ -138,12 +161,24 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 node,
                 year,
                 today,
+                heating_factors,
                 heating_scale if node.profile == PROFILE_HEATING else warm_water_scale,
+                warm_water_factors,
+            )
+            node.monthly_forecast = self._monthly_breakdown(
+                node=node,
+                year=year,
+                today=today,
+                heating_factors=heating_factors,
+                warm_water_factors=warm_water_factors,
+                heating_scale=heating_scale,
+                warm_water_scale=warm_water_scale,
             )
 
         total_actual = sum(node.residual for node in nodes.values())
         total_forecast = sum(node.forecast_total for node in nodes.values())
         total_remaining = max(0.0, total_forecast - total_actual)
+        monthly_totals = self._aggregate_monthly(nodes.values())
 
         return {
             "as_of": now.isoformat(),
@@ -151,6 +186,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "total_actual": total_actual,
             "total_forecast": total_forecast,
             "total_remaining": total_remaining,
+            "monthly": monthly_totals,
             "nodes": [
                 {
                     "statistic_id": node.stat_id,
@@ -163,6 +199,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "residual": node.residual,
                     "forecast_total": node.forecast_total,
                     "forecast_remaining": node.forecast_remaining,
+                    "monthly": node.monthly_forecast,
                 }
                 for node in nodes.values()
             ],
@@ -205,6 +242,15 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
                 children_sum = sum(nodes[child].measured for child in node.children)
                 node.residual = max(0.0, node.measured - children_sum)
+                if node.monthly_measured:
+                    monthly_res: dict[int, float] = {}
+                    for month, value in node.monthly_measured.items():
+                        child_sum = sum(
+                            nodes[child].monthly_measured.get(month, 0.0)
+                            for child in node.children
+                        )
+                        monthly_res[month] = max(0.0, value - child_sum)
+                    node.monthly_residual = monthly_res
                 pending.remove(stat_id)
 
     def _assign_profiles(
@@ -231,16 +277,22 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 node.method = "linear"
 
     def _forecast_node(
-        self, node: ForecastNode, year: int, today: date, profile_scale: float
+        self,
+        node: ForecastNode,
+        year: int,
+        today: date,
+        heating_factors: dict[int, float],
+        profile_scale: float,
+        warm_water_factors: dict[int, float],
     ) -> tuple[float, float]:
         """Forecast the node residual for the configured year."""
         if node.profile == PROFILE_HEATING:
             return self._seasonal_forecast(
-                node.residual, year, today, HEAT_LOAD_FACTORS, profile_scale
+                node.residual, year, today, heating_factors, profile_scale
             )
         if node.profile == PROFILE_WARM_WATER:
             return self._seasonal_forecast(
-                node.residual, year, today, WARM_WATER_LOAD_FACTORS, profile_scale
+                node.residual, year, today, warm_water_factors, profile_scale
             )
 
         days_in_year = (date(year + 1, 1, 1) - date(year, 1, 1)).days
@@ -298,6 +350,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "total_actual": 0.0,
             "total_forecast": 0.0,
             "total_remaining": 0.0,
+            "monthly": [],
             "nodes": [],
         }
 
@@ -359,3 +412,80 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 kwargs[name] = value
         return statistics_during_period(*args, **kwargs)
+
+    def _load_factors(
+        self, raw: dict[int, float] | list[float] | None, fallback: dict[int, float]
+    ) -> dict[int, float]:
+        """Load month factors with fallback defaults."""
+        if not raw:
+            return dict(fallback)
+        if isinstance(raw, list):
+            return {month: float(raw[month - 1]) for month in range(1, min(12, len(raw)) + 1)}
+        return {int(month): float(value) for month, value in raw.items() if 1 <= int(month) <= 12}
+
+    def _monthly_breakdown(
+        self,
+        *,
+        node: ForecastNode,
+        year: int,
+        today: date,
+        heating_factors: dict[int, float],
+        warm_water_factors: dict[int, float],
+        heating_scale: float,
+        warm_water_scale: float,
+    ) -> list[dict[str, Any]]:
+        """Return a monthly breakdown for a node (actual + forecast/remaining)."""
+        if node.profile == PROFILE_HEATING:
+            factors = heating_factors
+            scale = heating_scale
+        elif node.profile == PROFILE_WARM_WATER:
+            factors = warm_water_factors
+            scale = warm_water_scale
+        else:
+            factors = None
+            scale = 1.0
+
+        months: list[dict[str, Any]] = []
+        weights: dict[int, float] = {}
+        for month in range(1, 13):
+            days = calendar.monthrange(year, month)[1]
+            weight = (
+                factors.get(month, 0.0) * days * scale if factors is not None else days
+            )
+            weights[month] = max(weight, 0.0)
+
+        weight_total = sum(weights.values()) or 1.0
+        for month in range(1, 13):
+            weight = weights[month]
+            share = weight / weight_total
+            forecast = node.forecast_total * share
+            actual = node.monthly_residual.get(month, 0.0)
+            months.append(
+                {
+                    "month": month,
+                    "actual": actual,
+                    "forecast": forecast,
+                    "remaining": max(0.0, forecast - actual),
+                }
+            )
+        return months
+
+    def _aggregate_monthly(self, nodes: Any) -> list[dict[str, Any]]:
+        """Aggregate monthly forecast and actual across nodes."""
+        totals: dict[int, dict[str, float]] = {m: {"actual": 0.0, "forecast": 0.0} for m in range(1, 13)}
+        for node in nodes:
+            for entry in node.monthly_forecast:
+                month = entry.get("month")
+                if month not in totals:
+                    continue
+                totals[month]["actual"] += float(entry.get("actual", 0.0))
+                totals[month]["forecast"] += float(entry.get("forecast", 0.0))
+        return [
+            {
+                "month": month,
+                "actual": vals["actual"],
+                "forecast": vals["forecast"],
+                "remaining": max(0.0, vals["forecast"] - vals["actual"]),
+            }
+            for month, vals in sorted(totals.items())
+        ]

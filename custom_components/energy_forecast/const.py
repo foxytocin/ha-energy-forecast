@@ -12,6 +12,8 @@ CONF_WARM_WATER_NODES = "warm_water_nodes"
 CONF_HEATING_SCALE = "heating_scale"
 CONF_WARM_WATER_SCALE = "warm_water_scale"
 CONF_SENSOR_PREFIX = "sensor_prefix"
+CONF_HEATING_FACTORS = "heating_factors"
+CONF_WARM_WATER_FACTORS = "warm_water_factors"
 
 DEFAULT_YEAR = dt_util.now().year
 DEFAULT_HEATING_SCALE = 1.0

@@ -14,15 +14,19 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_HEATING_NODES,
     CONF_HEATING_SCALE,
+    CONF_HEATING_FACTORS,
     CONF_SENSOR_PREFIX,
     CONF_WARM_WATER_NODES,
     CONF_WARM_WATER_SCALE,
+    CONF_WARM_WATER_FACTORS,
     CONF_YEAR,
     DEFAULT_HEATING_SCALE,
     DEFAULT_SENSOR_PREFIX,
     DEFAULT_WARM_WATER_SCALE,
     DEFAULT_YEAR,
     DOMAIN,
+    HEAT_LOAD_FACTORS,
+    WARM_WATER_LOAD_FACTORS,
 )
 from .energy_manager import async_get_manager_and_prefs
 
@@ -87,11 +91,23 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
             options.get(CONF_WARM_WATER_SCALE, DEFAULT_WARM_WATER_SCALE)
         )
         sensor_prefix_default = str(options.get(CONF_SENSOR_PREFIX, DEFAULT_SENSOR_PREFIX))
+        heating_factors_default = _factors_to_csv(
+            options.get(CONF_HEATING_FACTORS, HEAT_LOAD_FACTORS), HEAT_LOAD_FACTORS
+        )
+        warm_water_factors_default = _factors_to_csv(
+            options.get(CONF_WARM_WATER_FACTORS, WARM_WATER_LOAD_FACTORS), WARM_WATER_LOAD_FACTORS
+        )
 
         device_options = await _async_build_device_options(hass)
 
         if user_input is not None:
             sensor_prefix = str(user_input.get(CONF_SENSOR_PREFIX, sensor_prefix_default)).strip()
+            heating_factors = _parse_factors_csv(
+                user_input.get(CONF_HEATING_FACTORS, heating_factors_default), HEAT_LOAD_FACTORS
+            )
+            warm_water_factors = _parse_factors_csv(
+                user_input.get(CONF_WARM_WATER_FACTORS, warm_water_factors_default), WARM_WATER_LOAD_FACTORS
+            )
             data = {
                 CONF_YEAR: int(user_input.get(CONF_YEAR, year_default)),
                 CONF_HEATING_NODES: user_input.get(CONF_HEATING_NODES, []),
@@ -99,6 +115,8 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
                 CONF_HEATING_SCALE: float(user_input.get(CONF_HEATING_SCALE, heating_scale_default)),
                 CONF_WARM_WATER_SCALE: float(user_input.get(CONF_WARM_WATER_SCALE, warm_water_scale_default)),
                 CONF_SENSOR_PREFIX: sensor_prefix,
+                CONF_HEATING_FACTORS: heating_factors,
+                CONF_WARM_WATER_FACTORS: warm_water_factors,
             }
             return self.async_create_entry(title="", data=data)
 
@@ -125,6 +143,12 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_WARM_WATER_SCALE, default=warm_water_scale_default): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.1, max=5.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
+                vol.Optional(CONF_HEATING_FACTORS, default=heating_factors_default): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=False)
+                ),
+                vol.Optional(CONF_WARM_WATER_FACTORS, default=warm_water_factors_default): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=False)
+                ),
                 vol.Optional(CONF_SENSOR_PREFIX, default=sensor_prefix_default): str,
             }
         )
@@ -143,3 +167,32 @@ async def _async_build_device_options(hass: HomeAssistant) -> list[dict[str, str
         name = device.get("name") or stat_id
         options.append({"value": stat_id, "label": name})
     return options
+
+
+def _parse_factors_csv(value: str | None, fallback: dict[int, float]) -> dict[int, float]:
+    """Parse a comma-separated list of 12 numbers into month factors."""
+    if not value:
+        return dict(fallback)
+    try:
+        parts = [float(p.strip()) for p in value.split(",") if p.strip()]
+    except Exception:
+        return dict(fallback)
+    factors: dict[int, float] = {}
+    for idx, val in enumerate(parts[:12], 1):
+        factors[idx] = val
+    if len(factors) < 12:
+        for month, val in fallback.items():
+            factors.setdefault(month, val)
+    return factors
+
+
+def _factors_to_csv(value: dict[int, float] | list[float], fallback: dict[int, float]) -> str:
+    """Render month factors as CSV string for the options UI."""
+    if isinstance(value, list):
+        factors = {idx + 1: float(val) for idx, val in enumerate(value[:12])}
+    else:
+        factors = {int(k): float(v) for k, v in value.items() if 1 <= int(k) <= 12}
+    if not factors:
+        factors = dict(fallback)
+    ordered = [str(factors.get(month, fallback.get(month, 0.0))) for month in range(1, 13)]
+    return ",".join(ordered)

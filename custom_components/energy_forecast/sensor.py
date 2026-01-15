@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -11,7 +12,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -27,33 +28,48 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors."""
     coordinator: EnergyForecastCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([EnergyForecastSensor(coordinator, entry)])
+    prefix = _compute_prefix(entry)
+    entities: list[SensorEntity] = [EnergyForecastSensor(coordinator, entry, prefix)]
+
+    added: set[str] = set()
+    data = coordinator.data or {}
+    for node in data.get("nodes", []):
+        ent = EnergyForecastNodeSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"))
+        entities.append(ent)
+        added.add(ent.unique_id)  # type: ignore[arg-type]
+
+    async_add_entities(entities)
+
+    @callback
+    def _handle_coordinator_update() -> None:
+        """Create new node sensors if graph changes."""
+        new_entities: list[SensorEntity] = []
+        data_local = coordinator.data or {}
+        for node in data_local.get("nodes", []):
+            unique_id = f"{entry.entry_id}_node_{node['statistic_id']}"
+            if unique_id in added:
+                continue
+            ent = EnergyForecastNodeSensor(coordinator, entry, prefix, node["statistic_id"], node.get("name"))
+            new_entities.append(ent)
+            added.add(unique_id)
+        if new_entities:
+            async_add_entities(new_entities)
+
+    coordinator.async_add_listener(_handle_coordinator_update)
 
 
-class EnergyForecastSensor(CoordinatorEntity[EnergyForecastCoordinator], SensorEntity):
-    """Sensor exposing annual forecast."""
+class _BaseEnergyForecastSensor(CoordinatorEntity[EnergyForecastCoordinator], SensorEntity):
+    """Shared base behavior."""
 
     _attr_has_entity_name = False
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: EnergyForecastCoordinator, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: EnergyForecastCoordinator, entry: ConfigEntry, *, prefix: str) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        prefix = (
-            entry.options.get(CONF_SENSOR_PREFIX)
-            or entry.data.get(CONF_SENSOR_PREFIX)
-            or DEFAULT_SENSOR_PREFIX
-        ).strip()
-        if prefix and not prefix.endswith("_"):
-            prefix = f"{prefix}_"
-        object_id = f"{prefix}energy_forecast" if prefix else "energy_forecast"
-        display_name = object_id.replace("_", " ").title()
-
-        self._attr_unique_id = f"{entry.entry_id}_forecast"
-        self._attr_name = display_name
-        self._attr_suggested_object_id = object_id
+        self._prefix = prefix
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Energy Forecast",
@@ -62,17 +78,100 @@ class EnergyForecastSensor(CoordinatorEntity[EnergyForecastCoordinator], SensorE
         )
 
     @property
+    def _data(self) -> dict[str, Any]:
+        return self.coordinator.data or {}
+
+
+class EnergyForecastSensor(_BaseEnergyForecastSensor):
+    """Sensor exposing annual forecast (total)."""
+
+    def __init__(self, coordinator: EnergyForecastCoordinator, entry: ConfigEntry, prefix: str) -> None:
+        super().__init__(coordinator, entry, prefix=prefix)
+        object_id = f"{prefix}energy_forecast" if prefix else "energy_forecast"
+        display_name = object_id.replace("_", " ").title()
+        self._attr_unique_id = f"{entry.entry_id}_forecast"
+        self._attr_name = display_name
+        self._attr_suggested_object_id = object_id
+
+    @property
     def native_value(self) -> float | None:
-        data = self.coordinator.data or {}
-        return data.get("total_forecast")
+        return self._data.get("total_forecast")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        data = self.coordinator.data or {}
         return {
-            "year": data.get("year"),
-            "as_of": data.get("as_of"),
-            "total_actual": data.get("total_actual"),
-            "total_remaining": data.get("total_remaining"),
-            "nodes": data.get("nodes", []),
+            "year": self._data.get("year"),
+            "as_of": self._data.get("as_of"),
+            "total_actual": self._data.get("total_actual"),
+            "total_remaining": self._data.get("total_remaining"),
+            "monthly": self._data.get("monthly", []),
+            "nodes": self._data.get("nodes", []),
         }
+
+
+class EnergyForecastNodeSensor(_BaseEnergyForecastSensor):
+    """Per-statistic node sensor."""
+
+    def __init__(
+        self,
+        coordinator: EnergyForecastCoordinator,
+        entry: ConfigEntry,
+        prefix: str,
+        stat_id: str,
+        name: str | None = None,
+    ) -> None:
+        super().__init__(coordinator, entry, prefix=prefix)
+        self._stat_id = stat_id
+        self._attr_unique_id = f"{entry.entry_id}_node_{stat_id}"
+        object_id = f"{prefix}{_normalize_object_id(stat_id)}"
+        self._attr_suggested_object_id = object_id
+        self._attr_name = name or stat_id
+
+    @property
+    def _node(self) -> dict[str, Any] | None:
+        for node in self._data.get("nodes", []):
+            if node.get("statistic_id") == self._stat_id:
+                return node
+        return None
+
+    @property
+    def native_value(self) -> float | None:
+        node = self._node
+        if not node:
+            return None
+        return node.get("forecast_total")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        node = self._node or {}
+        return {
+            "year": self._data.get("year"),
+            "as_of": self._data.get("as_of"),
+            "statistic_id": self._stat_id,
+            "parent": node.get("parent"),
+            "children": node.get("children", []),
+            "profile": node.get("profile"),
+            "method": node.get("method"),
+            "measured": node.get("measured"),
+            "residual": node.get("residual"),
+            "forecast_total": node.get("forecast_total"),
+            "forecast_remaining": node.get("forecast_remaining"),
+            "monthly": node.get("monthly", []),
+        }
+
+
+def _compute_prefix(entry: ConfigEntry) -> str:
+    """Return normalized prefix with trailing underscore or empty string."""
+    prefix = (
+        entry.options.get(CONF_SENSOR_PREFIX)
+        or entry.data.get(CONF_SENSOR_PREFIX)
+        or DEFAULT_SENSOR_PREFIX
+    ).strip()
+    if prefix and not prefix.endswith("_"):
+        prefix = f"{prefix}_"
+    return prefix
+
+
+def _normalize_object_id(stat_id: str) -> str:
+    """Return a safe object_id based on a statistic_id."""
+    return re.sub(r"[^0-9a-zA-Z_]+", "_", stat_id.replace(".", "_"))
