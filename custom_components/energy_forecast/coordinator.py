@@ -478,8 +478,16 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _scale_for_stat(self, stat_id: str, metadata: dict[str, Any]) -> float:
         """Return multiplier to convert statistics to kWh."""
-        meta = metadata.get(stat_id) or {}
-        unit = getattr(meta, "unit_of_measurement", None) or meta.get("unit_of_measurement")
+        meta = metadata.get(stat_id)
+        if not meta:
+            return 1.0
+        
+        unit = getattr(meta, "unit_of_measurement", None)
+        if unit is None and isinstance(meta, dict):
+            unit = meta.get("unit_of_measurement")
+        # If meta is a tuple and we didn't find the attribute, we can't safely guess the unit.
+        # Fallback to 1.0 (assume kWh/consistent unit).
+
         if unit in ("Wh", "wH", "watt_hour", "watt-hour"):
             return 0.001
         if unit in ("kWh", UnitOfEnergy.KILO_WATT_HOUR):
