@@ -152,6 +152,8 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             nodes[stat_id].debug_scale = scale
             nodes[stat_id].debug_unit = unit_str
             
+            _LOGGER.debug("Stat %s: Unit='%s', Scale=%s", stat_id, unit_str, scale)
+            
             total = 0.0
             monthly: dict[int, float] = {}
             for item in results:
