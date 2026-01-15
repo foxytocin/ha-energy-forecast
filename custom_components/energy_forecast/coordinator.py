@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import calendar
 import logging
+import inspect
 from typing import Any
 from collections.abc import Callable
 
@@ -113,15 +114,10 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         end_local = min(end_local, now.astimezone(tz))
 
         stats = await self.hass.async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            dt_util.as_utc(start_local),
-            dt_util.as_utc(end_local),
+            self._statistics_during_period_compat,
+            start_local,
+            end_local,
             statistic_ids,
-            "day",
-            {"energy": UnitOfEnergy.KILO_WATT_HOUR},
-            None,
-            {"sum"},
         )
 
         for stat_id, results in (stats or {}).items():
@@ -327,3 +323,37 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Callback for manager updates."""
         _LOGGER.debug("Energy manager update detected; scheduling refresh")
         self.async_request_refresh()
+
+    def _statistics_during_period_compat(
+        self, start_local: datetime, end_local: datetime, statistic_ids: list[str]
+    ) -> dict[str, Any]:
+        """Call statistics_during_period with a version-tolerant signature."""
+        start_utc = dt_util.as_utc(start_local)
+        end_utc = dt_util.as_utc(end_local)
+        param_values: dict[str, Any] = {
+            "hass": self.hass,
+            "start_time": start_utc,
+            "end_time": end_utc,
+            "start": start_utc,  # some versions use start/end
+            "end": end_utc,
+            "statistic_ids": statistic_ids,
+            "period": "day",
+            "units": {"energy": UnitOfEnergy.KILO_WATT_HOUR},
+            "types": {"sum"},
+        }
+
+        args: list[Any] = []
+        kwargs: dict[str, Any] = {}
+        sig = inspect.signature(statistics_during_period)
+        for name, param in sig.parameters.items():
+            if name not in param_values:
+                continue
+            value = param_values[name]
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                args.append(value)
+            else:
+                kwargs[name] = value
+        return statistics_during_period(*args, **kwargs)
