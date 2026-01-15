@@ -60,6 +60,10 @@ class ForecastNode:
     daily_forecast: list[dict[str, Any]] = field(default_factory=list)
     method: str = "linear"
     profile: str | None = None
+    # Debug info
+    debug_unit: str | None = None
+    debug_scale: float = 1.0
+    debug_raw_val: float = 0.0
 
 
 class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -144,13 +148,17 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for stat_id, results in (stats or {}).items():
             if stat_id not in nodes:
                 continue
-            scale = self._scale_for_stat(stat_id, metadata)
+            scale, unit_str = self._scale_for_stat(stat_id, metadata)
+            nodes[stat_id].debug_scale = scale
+            nodes[stat_id].debug_unit = unit_str
+            
             total = 0.0
             monthly: dict[int, float] = {}
             for item in results:
                 val = item.get("sum")
                 if val is None:
                     continue
+                nodes[stat_id].debug_raw_val += val # Accumulate raw sum
                 val *= scale
                 total += val
                 try:
@@ -481,25 +489,33 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             return {}
 
-    def _scale_for_stat(self, stat_id: str, metadata: dict[str, Any]) -> float:
+    def _scale_for_stat(self, stat_id: str, metadata: dict[str, Any]) -> tuple[float, str | None]:
         """Return multiplier to convert statistics to kWh."""
         meta = metadata.get(stat_id)
         if not meta:
-            return 1.0
+            return 1.0, None
         
         unit = getattr(meta, "unit_of_measurement", None)
         if unit is None and isinstance(meta, dict):
             unit = meta.get("unit_of_measurement")
         
         if not isinstance(unit, str):
-            return 1.0
+            # Fallback based on device class? For now just 1.0
+            return 1.0, None
 
         n_unit = unit.strip().lower()
         if n_unit in ("wh", "watt_hour", "watthour", "watt-hour"):
-            return 0.001
+            return 0.001, unit
         if n_unit in ("kwh", "kilo_watt_hour", "kilowatt_hour", "kilowatt-hour"):
-            return 1.0
-        return 1.0
+            return 1.0, unit
+        if n_unit in ("mj", "megajoule"):
+            return 0.277778, unit
+        if n_unit in ("gj", "gigajoule"):
+            return 277.778, unit
+        if n_unit in ("j", "joule", "ws", "watt_second"):
+            return 0.000000277778, unit # 1/3,600,000
+            
+        return 1.0, unit
 
     def _load_factors(
         self, raw: dict[int, float] | list[float] | None, fallback: dict[int, float]

@@ -173,6 +173,9 @@ class EnergyForecastNodeSensor(_BaseEnergyForecastSensor):
             "forecast_remaining": node.get("forecast_remaining"),
             "monthly": node.get("monthly", []),
             "daily": node.get("daily", []),
+            "debug_unit": node.get("debug_unit"),
+            "debug_scale": node.get("debug_scale"),
+            "debug_raw_val": node.get("debug_raw_val"),
         }
 
 
