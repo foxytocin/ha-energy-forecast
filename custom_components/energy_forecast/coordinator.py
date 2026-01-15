@@ -11,7 +11,7 @@ from typing import Any
 from collections.abc import Callable
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
-from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.components.recorder.statistics import statistics_during_period, get_metadata
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -132,16 +132,22 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             end_local,
             statistic_ids,
         )
+        if not isinstance(stats, tuple):
+            stats, metadata = stats, {}
+        else:
+            stats, metadata = stats
 
         for stat_id, results in (stats or {}).items():
             if stat_id not in nodes:
                 continue
+            scale = self._scale_for_stat(stat_id, metadata)
             total = 0.0
             monthly: dict[int, float] = {}
             for item in results:
                 val = item.get("sum")
                 if val is None:
                     continue
+                val *= scale
                 total += val
                 try:
                     month = dt_util.as_local(item["start"]).month  # type: ignore[index]
@@ -393,8 +399,9 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "end": end_utc,
             "statistic_ids": statistic_ids,
             "period": "day",
-            "units": {"energy": UnitOfEnergy.KILO_WATT_HOUR},
+            "units": None,
             "types": {"sum"},
+            "metadata": True,
         }
 
         args: list[Any] = []
@@ -411,7 +418,22 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 args.append(value)
             else:
                 kwargs[name] = value
-        return statistics_during_period(*args, **kwargs)
+        result = statistics_during_period(*args, **kwargs)
+        if isinstance(result, tuple) or "metadata" in sig.parameters:
+            return result
+        # Fall back: manually fetch metadata if the call didn't return it
+        metadata = get_metadata(self.hass, statistic_ids=statistic_ids)  # type: ignore[arg-type]
+        return result, metadata
+
+    def _scale_for_stat(self, stat_id: str, metadata: dict[str, Any]) -> float:
+        """Return multiplier to convert statistics to kWh."""
+        meta = metadata.get(stat_id) or {}
+        unit = getattr(meta, "unit_of_measurement", None) or meta.get("unit_of_measurement")
+        if unit in ("Wh", "wH", "watt_hour", "watt-hour"):
+            return 0.001
+        if unit in ("kWh", UnitOfEnergy.KILO_WATT_HOUR):
+            return 1.0
+        return 1.0
 
     def _load_factors(
         self, raw: dict[int, float] | list[float] | None, fallback: dict[int, float]
