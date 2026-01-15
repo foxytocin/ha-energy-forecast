@@ -168,7 +168,12 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 val = item.get("sum")
                 if val is None:
                     continue
-                start_dt = dt_util.as_local(item["start"]).date()  # type: ignore[index]
+                raw_start = item["start"]
+                if isinstance(raw_start, (float, int)):
+                    start_dt_utc = dt_util.utc_from_timestamp(raw_start)
+                else:
+                    start_dt_utc = raw_start
+                start_dt = dt_util.as_local(start_dt_utc).date()
                 daily_vals[start_dt.isoformat()] = val * scale
             nodes[stat_id].daily_measured = daily_vals
 
