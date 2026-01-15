@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_SENSOR_PREFIX, DEFAULT_SENSOR_PREFIX, DOMAIN
 from .coordinator import EnergyForecastCoordinator
 
 
@@ -33,8 +33,7 @@ async def async_setup_entry(
 class EnergyForecastSensor(CoordinatorEntity[EnergyForecastCoordinator], SensorEntity):
     """Sensor exposing annual forecast."""
 
-    _attr_has_entity_name = True
-    _attr_name = "Energy Forecast"
+    _attr_has_entity_name = False
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -42,7 +41,19 @@ class EnergyForecastSensor(CoordinatorEntity[EnergyForecastCoordinator], SensorE
     def __init__(self, coordinator: EnergyForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._entry = entry
+        prefix = (
+            entry.options.get(CONF_SENSOR_PREFIX)
+            or entry.data.get(CONF_SENSOR_PREFIX)
+            or DEFAULT_SENSOR_PREFIX
+        ).strip()
+        if prefix and not prefix.endswith("_"):
+            prefix = f"{prefix}_"
+        object_id = f"{prefix}energy_forecast" if prefix else "energy_forecast"
+        display_name = object_id.replace("_", " ").title()
+
         self._attr_unique_id = f"{entry.entry_id}_forecast"
+        self._attr_name = display_name
+        self._attr_suggested_object_id = object_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Energy Forecast",

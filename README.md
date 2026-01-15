@@ -23,6 +23,7 @@ Custom integration for Home Assistant 2026.1.x that uses the Energy Dashboard gr
 - **Heating nodes**: Select Energy Dashboard devices that should use the heating profile (multi-select).
 - **Warm water nodes**: Select devices for the warm water profile (multi-select).
 - **Scale factors**: Multipliers applied to the seasonal profiles (default `1.0` each).
+- **Sensor prefix**: Optional prefix (e.g., `fms_`) that is applied to generated entity IDs to avoid naming collisions.
 - The device tree is read from the Energy Dashboard; no manual wiring is required.
 
 ## Sensor output

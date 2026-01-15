@@ -11,10 +11,12 @@ CONF_HEATING_NODES = "heating_nodes"
 CONF_WARM_WATER_NODES = "warm_water_nodes"
 CONF_HEATING_SCALE = "heating_scale"
 CONF_WARM_WATER_SCALE = "warm_water_scale"
+CONF_SENSOR_PREFIX = "sensor_prefix"
 
 DEFAULT_YEAR = dt_util.now().year
 DEFAULT_HEATING_SCALE = 1.0
 DEFAULT_WARM_WATER_SCALE = 1.0
+DEFAULT_SENSOR_PREFIX = ""
 
 # Monthly factors per day; values are relative weights
 HEAT_LOAD_FACTORS = {

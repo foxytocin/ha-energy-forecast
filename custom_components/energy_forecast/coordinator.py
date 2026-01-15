@@ -9,7 +9,6 @@ import logging
 from typing import Any
 from collections.abc import Callable
 
-from homeassistant.components.energy import async_get_manager
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
@@ -32,6 +31,7 @@ from .const import (
     PROFILE_WARM_WATER,
     WARM_WATER_LOAD_FACTORS,
 )
+from .energy_manager import async_get_manager_and_prefs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,8 +90,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         end_date = date(year + 1, 1, 1)
 
         # Load Energy Dashboard preferences (graph definition)
-        manager = await async_get_manager(self.hass)
-        await manager.async_refresh_preferences()
+        manager, prefs = await async_get_manager_and_prefs(self.hass)
 
         # Register live listener once, if supported by manager
         if not self._manager_listener_registered:
@@ -100,7 +99,6 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.entry.async_on_unload(unsub)
                 self._manager_listener_registered = True
 
-        prefs = manager.data or {}
         devices = prefs.get("device_consumption") or []
         if not devices:
             _LOGGER.warning("No energy dashboard device consumption entries found")

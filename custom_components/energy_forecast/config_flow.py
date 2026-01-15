@@ -7,7 +7,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components.energy import async_get_manager
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
@@ -15,14 +14,17 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_HEATING_NODES,
     CONF_HEATING_SCALE,
+    CONF_SENSOR_PREFIX,
     CONF_WARM_WATER_NODES,
     CONF_WARM_WATER_SCALE,
     CONF_YEAR,
     DEFAULT_HEATING_SCALE,
+    DEFAULT_SENSOR_PREFIX,
     DEFAULT_WARM_WATER_SCALE,
     DEFAULT_YEAR,
     DOMAIN,
 )
+from .energy_manager import async_get_manager_and_prefs
 
 
 class EnergyForecastConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -58,7 +60,7 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
     """Options for Energy Forecast."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        super().__init__(config_entry)
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options."""
@@ -74,16 +76,19 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
         warm_water_scale_default = float(
             options.get(CONF_WARM_WATER_SCALE, DEFAULT_WARM_WATER_SCALE)
         )
+        sensor_prefix_default = str(options.get(CONF_SENSOR_PREFIX, DEFAULT_SENSOR_PREFIX))
 
         device_options = await _async_build_device_options(hass)
 
         if user_input is not None:
+            sensor_prefix = str(user_input.get(CONF_SENSOR_PREFIX, sensor_prefix_default)).strip()
             data = {
                 CONF_YEAR: int(user_input.get(CONF_YEAR, year_default)),
                 CONF_HEATING_NODES: user_input.get(CONF_HEATING_NODES, []),
                 CONF_WARM_WATER_NODES: user_input.get(CONF_WARM_WATER_NODES, []),
                 CONF_HEATING_SCALE: float(user_input.get(CONF_HEATING_SCALE, heating_scale_default)),
                 CONF_WARM_WATER_SCALE: float(user_input.get(CONF_WARM_WATER_SCALE, warm_water_scale_default)),
+                CONF_SENSOR_PREFIX: sensor_prefix,
             }
             return self.async_create_entry(title="", data=data)
 
@@ -110,6 +115,7 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_WARM_WATER_SCALE, default=warm_water_scale_default): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.1, max=5.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
+                vol.Optional(CONF_SENSOR_PREFIX, default=sensor_prefix_default): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=data_schema)
@@ -117,9 +123,7 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
 
 async def _async_build_device_options(hass: HomeAssistant) -> list[dict[str, str]]:
     """Return select options for energy device consumptions."""
-    manager = await async_get_manager(hass)
-    await manager.async_refresh_preferences()
-    prefs = manager.data or {}
+    _, prefs = await async_get_manager_and_prefs(hass)
     devices = prefs.get("device_consumption") or []
     options: list[dict[str, str]] = []
     for device in devices:
