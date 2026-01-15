@@ -55,6 +55,9 @@ class ForecastNode:
     forecast_total: float = 0.0
     forecast_remaining: float = 0.0
     monthly_forecast: list[dict[str, Any]] = field(default_factory=list)
+    daily_measured: dict[str, float] = field(default_factory=dict)
+    daily_residual: dict[str, float] = field(default_factory=dict)
+    daily_forecast: list[dict[str, Any]] = field(default_factory=list)
     method: str = "linear"
     profile: str | None = None
 
@@ -159,6 +162,16 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             nodes[stat_id].measured = total
             nodes[stat_id].monthly_measured = monthly
 
+            # Capture daily measured values
+            daily_vals: dict[str, float] = {}
+            for item in results:
+                val = item.get("sum")
+                if val is None:
+                    continue
+                start_dt = dt_util.as_local(item["start"]).date()  # type: ignore[index]
+                daily_vals[start_dt.isoformat()] = val * scale
+            nodes[stat_id].daily_measured = daily_vals
+
         self._compute_residuals(nodes)
         self._assign_profiles(nodes, heating_nodes, warm_water_nodes)
 
@@ -175,6 +188,14 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             node.monthly_forecast = self._monthly_breakdown(
                 node=node,
                 year=year,
+                today=today,
+                heating_factors=heating_factors,
+                warm_water_factors=warm_water_factors,
+                heating_scale=heating_scale,
+                warm_water_scale=warm_water_scale,
+            )
+            node.daily_forecast = self._compute_daily_forecast(
+                node=node,
                 today=today,
                 heating_factors=heating_factors,
                 warm_water_factors=warm_water_factors,
@@ -207,6 +228,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "forecast_total": node.forecast_total,
                     "forecast_remaining": node.forecast_remaining,
                     "monthly": node.monthly_forecast,
+                    "daily": node.daily_forecast,
                 }
                 for node in nodes.values()
             ],
@@ -258,6 +280,23 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         monthly_res[month] = max(0.0, value - child_sum)
                     node.monthly_residual = monthly_res
+                
+                # Compute daily residuals
+                if node.daily_measured:
+                    day_res: dict[str, float] = {}
+                    # Union of all days present in this node or any child
+                    all_days = set(node.daily_measured.keys())
+                    for child in node.children:
+                        all_days.update(nodes[child].daily_measured.keys())
+                    
+                    for day_str in all_days:
+                        val = node.daily_measured.get(day_str, 0.0)
+                        child_sum = sum(
+                            nodes[child].daily_measured.get(day_str, 0.0)
+                            for child in node.children
+                        )
+                        day_res[day_str] = max(0.0, val - child_sum)
+                    node.daily_residual = day_res
                 pending.remove(stat_id)
 
     def _assign_profiles(
@@ -523,3 +562,101 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             for month, vals in sorted(totals.items())
         ]
+    def _compute_daily_forecast(
+        self,
+        *,
+        node: ForecastNode,
+        today: date,
+        heating_factors: dict[int, float],
+        warm_water_factors: dict[int, float],
+        heating_scale: float,
+        warm_water_scale: float,
+    ) -> list[dict[str, Any]]:
+        """Compute daily forecast for the current month."""
+        start_of_month = today.replace(day=1)
+        # End of current month
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        
+        dailies: list[dict[str, Any]] = []
+        
+        # Determine factors/scale for this node
+        if node.profile == PROFILE_HEATING:
+            factors = heating_factors
+            scale = heating_scale
+        elif node.profile == PROFILE_WARM_WATER:
+            factors = warm_water_factors
+            scale = warm_water_scale
+        else:
+            factors = None
+            scale = 1.0
+
+        current_month_factor = factors.get(today.month, 0.0) if factors else 0.0
+        # Total factor weight for the month = factor * days
+        # But here 'factor' is usually "per month" relative to year? 
+        # Actually factors in config are usually relative weights.
+        # Let's assume the linear forecast method distributes the monthly residual evenly,
+        # and seasonal distributes it based on the factor? 
+        # Actually, for the FUTURE days of the current month, we want to project the remaining expected consumption.
+        
+        # We need the node's residual forecast for THIS MONTH specifically.
+        # We can find it in the already computed monthly breakdown.
+        month_forecast_entry = next(
+            (m for m in node.monthly_forecast if m["month"] == today.month), None
+        )
+        
+        month_total_forecast = month_forecast_entry["forecast"] if month_forecast_entry else 0.0
+        month_total_actual_so_far = month_forecast_entry["actual"] if month_forecast_entry else 0.0
+        
+        # Remaining to be consumed this month according to forecast
+        month_remaining = max(0.0, month_total_forecast - month_total_actual_so_far)
+        
+        days_in_month = last_day
+        days_elapsed = today.day  # inclusive of today? Usually today is "so far". 
+        # If we run this mid-day, 'today' data might be partial. 
+        # The logic in _forecast_node treats 'today' as passed/elapsed.
+        
+        # Days remaining AFTER today
+        days_remaining = days_in_month - days_elapsed
+        
+        avg_per_day_remaining = month_remaining / days_remaining if days_remaining > 0 else 0.0
+
+        for day_num in range(1, last_day + 1):
+            day_date = start_of_month.replace(day=day_num)
+            day_str = day_date.isoformat()
+            
+            is_future = day_date > today
+            
+            # Use computed residual if available (handles hierarchy), else measured
+            # But wait, residuals are what we are forecasting.
+            actual = node.daily_residual.get(day_str)
+            if actual is None:
+                # If no residual (maybe leaf node), use measured
+                actual = node.daily_measured.get(day_str, 0.0)
+                # But if it's a parent node, we must double check if residual logic gave it 0 or if it was missing.
+                # In _compute_residuals, we populated daily_residual for ALL days found in self or children.
+                # So if it's not there, it's 0.
+            
+            val_forecast = 0.0
+            
+            if is_future:
+                # For future days, we project
+                # Linear strategy: simple average of remaining
+                if node.method == "seasonal":
+                    # For seasonal, theoretically we could vary day-by-day if we had daily factors.
+                    # But we only have monthly factors. So we distribute evenly across remaining days of the month.
+                    val_forecast = avg_per_day_remaining
+                else:
+                    val_forecast = avg_per_day_remaining
+            else:
+                # For past/today, forecast matches actual (perfect hindsight) 
+                # OR we could show what the forecast WAS vs actual. 
+                # But typically "Forecast" graph shows Actuals up to today, then Forecast.
+                val_forecast = actual
+
+            dailies.append({
+                "date": day_str,
+                "actual": actual if not is_future else None,
+                "forecast": val_forecast
+            })
+            
+        return dailies

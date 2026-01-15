@@ -157,6 +157,7 @@ class EnergyForecastNodeSensor(_BaseEnergyForecastSensor):
             "forecast_total": node.get("forecast_total"),
             "forecast_remaining": node.get("forecast_remaining"),
             "monthly": node.get("monthly", []),
+            "daily": node.get("daily", []),
         }
 
 
