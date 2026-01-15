@@ -67,6 +67,11 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
         """Return the config entry this flow configures."""
         return self._config_entry
 
+    @config_entry.setter
+    def config_entry(self, value: config_entries.ConfigEntry) -> None:
+        """Allow assignments for HA versions that still set this attribute."""
+        self._config_entry = value
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options."""
         hass: HomeAssistant = self.hass
