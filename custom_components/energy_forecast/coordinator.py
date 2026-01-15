@@ -10,6 +10,7 @@ import inspect
 from typing import Any
 from collections.abc import Callable
 
+from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
@@ -113,7 +114,8 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         end_local = datetime.combine(end_date, datetime.min.time(), tzinfo=tz)
         end_local = min(end_local, now.astimezone(tz))
 
-        stats = await self.hass.async_add_executor_job(
+        recorder = get_recorder_instance(self.hass)
+        stats = await recorder.async_add_executor_job(
             self._statistics_during_period_compat,
             start_local,
             end_local,
