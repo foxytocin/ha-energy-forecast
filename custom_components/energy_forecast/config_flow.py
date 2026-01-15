@@ -60,7 +60,12 @@ class EnergyForecastOptionsFlow(config_entries.OptionsFlow):
     """Options for Energy Forecast."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        self._config_entry = config_entry
+
+    @property
+    def config_entry(self) -> config_entries.ConfigEntry:
+        """Return the config entry this flow configures."""
+        return self._config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options."""
