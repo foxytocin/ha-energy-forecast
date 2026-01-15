@@ -490,12 +490,14 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         unit = getattr(meta, "unit_of_measurement", None)
         if unit is None and isinstance(meta, dict):
             unit = meta.get("unit_of_measurement")
-        # If meta is a tuple and we didn't find the attribute, we can't safely guess the unit.
-        # Fallback to 1.0 (assume kWh/consistent unit).
+        
+        if not isinstance(unit, str):
+            return 1.0
 
-        if unit in ("Wh", "wH", "watt_hour", "watt-hour"):
+        n_unit = unit.strip().lower()
+        if n_unit in ("wh", "watt_hour", "watthour", "watt-hour"):
             return 0.001
-        if unit in ("kWh", UnitOfEnergy.KILO_WATT_HOUR):
+        if n_unit in ("kwh", "kilo_watt_hour", "kilowatt_hour", "kilowatt-hour"):
             return 1.0
         return 1.0
 
