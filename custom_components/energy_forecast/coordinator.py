@@ -136,6 +136,7 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             stats, metadata = stats, {}
         else:
             stats, metadata = stats
+        metadata = self._normalize_metadata(metadata)
 
         for stat_id, results in (stats or {}).items():
             if stat_id not in nodes:
@@ -422,8 +423,19 @@ class EnergyForecastCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if isinstance(result, tuple) or "metadata" in sig.parameters:
             return result
         # Fall back: manually fetch metadata if the call didn't return it
-        metadata = get_metadata(self.hass, statistic_ids=statistic_ids)  # type: ignore[arg-type]
+        metadata = get_metadata(self.hass, statistic_ids=set(statistic_ids))  # type: ignore[arg-type]
         return result, metadata
+
+    def _normalize_metadata(self, metadata: Any) -> dict[str, Any]:
+        """Ensure metadata is a dict keyed by statistic_id."""
+        if not metadata:
+            return {}
+        if isinstance(metadata, dict):
+            return metadata
+        try:
+            return dict(metadata)
+        except Exception:
+            return {}
 
     def _scale_for_stat(self, stat_id: str, metadata: dict[str, Any]) -> float:
         """Return multiplier to convert statistics to kWh."""
